@@ -10,10 +10,13 @@
 #include <BLEAdvertising.h>
 #include <string.h>
 #include <stdlib.h>
+#include <HTTPClient.h>
 #ifdef BUILD_FULL
 #include <WebSerial.h>
 #endif
 #include <WiFi.h>
+#include <Preferences.h>
+Preferences preferences;
 #ifdef BUILD_FULL
 #include <ESPAsyncWebServer.h>
 #endif
@@ -31,24 +34,6 @@ void write_uint16_le(uint16_t value, uint8_t *dest) {
   dest[1] = (value >> 8) & 0xFF;
 }
 
-// -----------------------------
-// Manufacturer Data Packet (19 bytes)
-// -----------------------------
-//
-// The manufacturer-specific data packet is always 19 bytes long.
-//  0-1: Company ID (0x02, 0x01)
-//  2:   Version Major
-//  3:   Version Minor
-//  4:   Data Type
-//  5:   Equipment ID
-//  6-7: Cadence (unsigned 16-bit little-endian)
-//  8-9: Heart Rate (unsigned 16-bit little-endian)
-// 10-11: Power (unsigned 16-bit little-endian)
-// 12-13: Caloric Burn (unsigned 16-bit little-endian)
-// 14:   Duration Minutes (1 byte)
-// 15:   Duration Seconds (1 byte)
-// 16-17: Distance (unsigned 16-bit little-endian); if is_metric is true, the MSB is set.
-// 18:   Gear (1 byte)
 void generateM3Data(uint8_t equipment_id, uint8_t version_major, uint8_t version_minor, uint8_t data_type,
                     uint16_t cadence, uint16_t heart_rate, uint16_t power, uint16_t caloric_burn,
                     uint8_t duration_minutes, uint8_t duration_seconds,
@@ -131,46 +116,79 @@ void updateBLEAdvertisement(const uint8_t manufacturer_data[19]) {
 // Simulation of Keiser M3 Data Transmission with BLE
 // Now also prints local Bluetooth MAC address
 // -----------------------------
-void simulateKeiserM3BLE(uint8_t equipment_id, unsigned long durationSec) {
-  unsigned long startTime = millis();
-  unsigned long elapsed = 0;
-  uint16_t cadence = 0, heart_rate = 0, power = 0, total_calories = 0, total_distance = 0;
-  uint8_t gear = 1;
+void simulateKeiserM3BLE(uint8_t equipment_id) {
+  Preferences preferences;
+  while (true) {
+    unsigned long startTime = millis();
+    unsigned long elapsed = 0;
+    uint16_t cadence = 0, heart_rate = 0, power = 0, total_calories = 0, total_distance = 0;
+    uint8_t gear = 1;
 
-  while (elapsed < durationSec * 1000UL) {
-    cadence = (uint16_t)(random(60, 101) * 10);
-    heart_rate = (uint16_t)(random(120, 151) * 10);
-    power = (uint16_t)random(100, 201);
-    gear = (uint8_t)random(1, 25);
-    total_calories += (power * 2) / 10;
-    total_distance += (cadence * 5) / 100;
-    bool is_metric = true;
+    while (elapsed < 30000) {
+      cadence = (uint16_t)(random(60, 101) * 10);
+      heart_rate = (uint16_t)(random(120, 151) * 10);
+      power = (uint16_t)random(100, 201);
+      gear = (uint8_t)random(1, 25);
+      total_calories += (power * 2) / 10;
+      total_distance += (cadence * 5) / 100;
+      bool is_metric = true;
 
-    uint8_t m_data[19];
-    uint8_t dur_min = (uint8_t)((elapsed / 60000UL) % 256);
-    uint8_t dur_sec = (uint8_t)((elapsed / 1000UL) % 60);
+      uint8_t m_data[19];
+      uint8_t dur_min = (uint8_t)((elapsed / 60000UL) % 256);
+      uint8_t dur_sec = (uint8_t)((elapsed / 1000UL) % 60);
 
-    generateM3Data(equipment_id, 6, 30, 0, cadence, heart_rate, power, total_calories,
-                   dur_min, dur_sec, total_distance, gear, is_metric, m_data);
+      generateM3Data(equipment_id, 6, 30, 0, cadence, heart_rate, power, total_calories,
+                    dur_min, dur_sec, total_distance, gear, is_metric, m_data);
 
-    updateBLEAdvertisement(m_data);
+      updateBLEAdvertisement(m_data);
 
-    Serial.print("MAC Address: ");
-    Serial.println(BLEDevice::getAddress().toString().c_str());
-    Serial.print("Time: ");
-    Serial.print(elapsed / 1000.0, 1);
-    Serial.println(" s");
-    Serial.print("  Advertising Data: ");
-    for (int i = 0; i < 19; i++) {
-      if (m_data[i] < 16) Serial.print("0");
-      Serial.print(m_data[i], HEX);
+      Serial.print("MAC Address: ");
+      Serial.println(BLEDevice::getAddress().toString().c_str());
+      Serial.print("IP Address: ");
+      Serial.println(WiFi.localIP());
+      Serial.print("Time: ");
+      Serial.print(elapsed / 1000.0, 1);
+      Serial.println(" s");
+      Serial.print("  Advertising Data: ");
+      for (int i = 0; i < 19; i++) {
+        if (m_data[i] < 16) Serial.print("0");
+        Serial.print(m_data[i], HEX);
+      }
+      Serial.println();
+      parseManufacturerData(m_data);
+      Serial.println("-------------------------");
+
+      if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin("https://influx.glencook.tech/api/v2/write?org=glencook&bucket=keiser_data&precision=s");
+        preferences.begin("influx", false);
+        String influxToken = preferences.getString("token", "");
+        preferences.end();
+        http.addHeader("Authorization", "Token " + influxToken);
+        http.addHeader("Content-Type", "text/plain");
+
+        String line = String("keiser_metrics,device=M3 cadence=") + String(cadence/10.0, 1) +
+                      ",heartrate=" + String(heart_rate/10.0, 1) +
+                      ",power=" + String(power) +
+                      ",calories=" + String(total_calories) +
+                      ",duration_min=" + String(dur_min) +
+                      ",duration_sec=" + String(dur_sec) +
+                      ",distance=" + String(total_distance / 10.0, 1) +
+                      ",gear=" + String(gear);
+
+        int httpCode = http.POST(line);
+        if (httpCode > 0) {
+          Serial.println("[InfluxDB] Sent: " + line);
+          Serial.println("[InfluxDB] Response: " + String(httpCode));
+        } else {
+          Serial.println("[InfluxDB] Failed to send: " + http.errorToString(httpCode));
+        }
+        http.end();
+      }
+
+      delay(1000);
+      elapsed = millis() - startTime;
     }
-    Serial.println();
-    parseManufacturerData(m_data);
-    Serial.println("-------------------------");
-
-    delay(1000);
-    elapsed = millis() - startTime;
   }
 }
 
@@ -178,8 +196,7 @@ void simulateKeiserM3BLE(uint8_t equipment_id, unsigned long durationSec) {
 // Arduino setup() and loop()
 // -----------------------------
 // Wi-Fi Credentials (will load from preferences or use defaults)
-#include <Preferences.h>
-Preferences preferences;
+
 
 String ssid = "";
 String password = "";
@@ -208,13 +225,15 @@ void setup() {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
+    WiFi.mode(WIFI_MODE_AP);
+    WiFi.softAP("KeiserSim_AP");
+    IPAddress IP = WiFi.softAPIP();
     Serial.println("Wi-Fi connection failed. Starting fallback AP...");
+    Serial.print("AP IP address: ");
+    Serial.println(IP);
     #ifdef BUILD_FULL
     WebSerial.println("Wi-Fi connection failed. Starting fallback AP...");
 #endif
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("KeiserSim_AP");
-    IPAddress IP = WiFi.softAPIP();
     #ifdef BUILD_FULL
     WebSerial.print("Access Point started. Connect to SSID 'KeiserSim_AP'. IP: ");
 #endif
@@ -237,18 +256,12 @@ void setup() {
     for (size_t i = 0; i < len; i++) input += (char)data[i];
     WebSerial.println("Received: " + input);
 
-    if (input.startsWith("wifi:")) {
-      int delim = input.indexOf(",");
-      if (delim > 5) {
-        ssid = input.substring(5, delim);
-        password = input.substring(delim + 1);
-        WebSerial.println("Saving new Wi-Fi credentials...");
-        preferences.begin("wifi", false);
-        preferences.putString("ssid", ssid);
-        preferences.putString("password", password);
-        preferences.end();
-        ESP.restart();
-      }
+    if (input.startsWith("token:")) {
+      String token = input.substring(6);
+      preferences.begin("influx", false);
+      preferences.putString("token", token);
+      preferences.end();
+      WebSerial.println("Saved InfluxDB token.");
     }
   });
 #endif
@@ -306,10 +319,17 @@ void setup() {
   pAdvertising->setAdvertisementData(advPayload);
   pAdvertising->start();
 
-  Serial.println("Starting Keiser M3 simulation with BLE...");
+  // Wait until Wi-Fi is fully ready or fallback AP is confirmed
+  int waitWiFi = 0;
+  while (WiFi.status() != WL_CONNECTED && waitWiFi < 10000) {
+    delay(100);
+    waitWiFi += 100;
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
+    // Simulation only starts when Wi-Fi is connected
     Serial.println("Starting Keiser M3 simulation with BLE...");
-    simulateKeiserM3BLE(56, 30);
+    simulateKeiserM3BLE(56);
     Serial.println("Simulation complete.");
   } else {
     Serial.println("Wi-Fi not connected. BLE simulation not started.");
