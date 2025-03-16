@@ -271,7 +271,8 @@ void setup() {
                   "<style>body{font-family:sans-serif;padding:2em;}input{width:100%;padding:0.5em;margin:0.5em 0;}button{padding:0.7em;width:100%;background:#007bff;color:#fff;border:none;cursor:pointer;}</style>"
                   "</head><body><h2>Wi-Fi Config</h2>"
                   "<form action='/save' method='get'>"
-                  "SSID: <input name='ssid' placeholder='Wi-Fi Name'><br>"
+                  "Token: <input name='token' placeholder='InfluxDB Token'><br>" 
+"SSID: <input name='ssid' placeholder='Wi-Fi Name'><br>"
                   "Password: <input name='pass' type='password' placeholder='Wi-Fi Password'><br>"
                   "<button type='submit'>Save and Reboot</button><br><p style='color:red;'>Simulation will only start if Wi-Fi is connected and a token is provided.</p></form></body></html>";
     request->send(200, "text/html", html);
