@@ -10,6 +10,13 @@
 #include <BLEAdvertising.h>
 #include <string.h>
 #include <stdlib.h>
+#ifdef BUILD_FULL
+#include <WebSerial.h>
+#endif
+#include <WiFi.h>
+#ifdef BUILD_FULL
+#include <ESPAsyncWebServer.h>
+#endif
 
 BLEAdvertising* pAdvertising;
 BLEAdvertisementData advPayload;
@@ -68,6 +75,9 @@ void generateM3Data(uint8_t equipment_id, uint8_t version_major, uint8_t version
 void parseManufacturerData(const uint8_t data[19]) {
   if (data[0] != 0x02 || data[1] != 0x01) {
     Serial.println("Invalid Company ID");
+    #ifdef BUILD_FULL
+    WebSerial.println("Invalid Company ID");
+    #endif
     return;
   }
 
@@ -87,7 +97,11 @@ void parseManufacturerData(const uint8_t data[19]) {
   uint8_t gear = data[18];
 
   Serial.println("Parsed Manufacturer Data:");
-  Serial.print("  Version: "); Serial.print(version_major); Serial.print("."); Serial.println(version_minor);
+  Serial.print("  Version: "); 
+  #ifdef BUILD_FULL
+    WebSerial.print("  Version: ");
+  #endif
+  Serial.print(version_major); Serial.print("."); Serial.println(version_minor);
   Serial.print("  Data Type: "); Serial.println(data_type);
   Serial.print("  Equipment ID: "); Serial.println(equipment_id);
   Serial.print("  Cadence: "); Serial.println(cadence / 10.0, 1);
@@ -163,7 +177,124 @@ void simulateKeiserM3BLE(uint8_t equipment_id, unsigned long durationSec) {
 // -----------------------------
 // Arduino setup() and loop()
 // -----------------------------
+// Wi-Fi Credentials (will load from preferences or use defaults)
+#include <Preferences.h>
+Preferences preferences;
+
+String ssid = "";
+String password = "";
+
+#ifdef BUILD_FULL
+AsyncWebServer server(80);
+#endif
+
 void setup() {
+  // Connect to Wi-Fi
+  preferences.begin("wifi", false);
+  ssid = preferences.getString("ssid", "BeastCave");
+  password = preferences.getString("password", "w0mb@t9078");
+  preferences.end();
+
+  Serial.print("Connecting to SSID: ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid.c_str(), password.c_str());
+  int attempts = 0;
+  WiFi.setTxPower(WIFI_POWER_2dBm);
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Wi-Fi connection failed. Starting fallback AP...");
+    #ifdef BUILD_FULL
+    WebSerial.println("Wi-Fi connection failed. Starting fallback AP...");
+#endif
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("KeiserSim_AP");
+    IPAddress IP = WiFi.softAPIP();
+    #ifdef BUILD_FULL
+    WebSerial.print("Access Point started. Connect to SSID 'KeiserSim_AP'. IP: ");
+#endif
+    Serial.print("Access Point started. Connect to SSID 'KeiserSim_AP'. IP: ");
+    Serial.println(IP);
+  } else {
+    Serial.println();
+    Serial.print("Connected! IP address: ");
+    Serial.println(WiFi.localIP());
+  }
+  Serial.println();
+  Serial.print("Connected! IP address: ");
+  Serial.println(WiFi.localIP());
+
+  // Start WebSerial
+  #ifdef BUILD_FULL
+  WebSerial.begin(&server);
+  WebSerial.onMessage([](uint8_t *data, size_t len) {
+    String input = "";
+    for (size_t i = 0; i < len; i++) input += (char)data[i];
+    WebSerial.println("Received: " + input);
+
+    if (input.startsWith("wifi:")) {
+      int delim = input.indexOf(",");
+      if (delim > 5) {
+        ssid = input.substring(5, delim);
+        password = input.substring(delim + 1);
+        WebSerial.println("Saving new Wi-Fi credentials...");
+        preferences.begin("wifi", false);
+        preferences.putString("ssid", ssid);
+        preferences.putString("password", password);
+        preferences.end();
+        ESP.restart();
+      }
+    }
+  });
+#endif
+  #ifdef BUILD_FULL
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
+                  "<style>body{font-family:sans-serif;padding:2em;}input{width:100%;padding:0.5em;margin:0.5em 0;}button{padding:0.7em;width:100%;background:#007bff;color:#fff;border:none;cursor:pointer;}</style>"
+                  "</head><body><h2>Wi-Fi Config</h2>"
+                  "<form action='/save' method='get'>"
+                  "SSID: <input name='ssid' placeholder='Wi-Fi Name'><br>"
+                  "Password: <input name='pass' type='password' placeholder='Wi-Fi Password'><br>"
+                  "<button type='submit'>Save and Reboot</button></form></body></html>";
+    request->send(200, "text/html", html);
+  });
+#endif
+
+  #ifdef BUILD_FULL
+  server.on("/save", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (request->hasParam("ssid") && request->hasParam("pass")) {
+      ssid = request->getParam("ssid")->value();
+      password = request->getParam("pass")->value();
+      preferences.begin("wifi", false);
+      preferences.putString("ssid", ssid);
+      preferences.putString("password", password);
+      preferences.end();
+      request->send(200, "text/plain", "Saved. Rebooting...");
+      delay(1000);
+      ESP.restart();
+    } else {
+      request->send(400, "text/plain", "Missing parameters");
+    }
+  });
+#endif
+
+  #ifdef BUILD_FULL
+  server.begin();
+#endif
+  // Captive portal redirect
+  #ifdef BUILD_FULL
+  server.onNotFound([](AsyncWebServerRequest *request){
+    request->redirect("/");
+  });
+#endif
+  #ifdef BUILD_FULL
+  WebSerial.println("WebSerial started. Open serial monitor in browser.");
+#endif
   Serial.begin(115200);
   while (!Serial) { ; }
   randomSeed(analogRead(A0));
@@ -176,8 +307,13 @@ void setup() {
   pAdvertising->start();
 
   Serial.println("Starting Keiser M3 simulation with BLE...");
-  simulateKeiserM3BLE(56, 30);
-  Serial.println("Simulation complete.");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Starting Keiser M3 simulation with BLE...");
+    simulateKeiserM3BLE(56, 30);
+    Serial.println("Simulation complete.");
+  } else {
+    Serial.println("Wi-Fi not connected. BLE simulation not started.");
+  }
 }
 
 void loop() {
