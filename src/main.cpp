@@ -273,7 +273,7 @@ void setup() {
                   "<form action='/save' method='get'>"
                   "SSID: <input name='ssid' placeholder='Wi-Fi Name'><br>"
                   "Password: <input name='pass' type='password' placeholder='Wi-Fi Password'><br>"
-                  "<button type='submit'>Save and Reboot</button></form></body></html>";
+                  "<button type='submit'>Save and Reboot</button><br><p style='color:red;'>Simulation will only start if Wi-Fi is connected and a token is provided.</p></form></body></html>";
     request->send(200, "text/html", html);
   });
 #endif
@@ -281,11 +281,13 @@ void setup() {
   #ifdef BUILD_FULL
   server.on("/save", HTTP_GET, [](AsyncWebServerRequest *request){
     if (request->hasParam("ssid") && request->hasParam("pass")) {
+      String token = request->hasParam("token") ? request->getParam("token")->value() : "";
       ssid = request->getParam("ssid")->value();
       password = request->getParam("pass")->value();
       preferences.begin("wifi", false);
       preferences.putString("ssid", ssid);
       preferences.putString("password", password);
+      if (token != "") preferences.putString("token", token);
       preferences.end();
       request->send(200, "text/plain", "Saved. Rebooting...");
       delay(1000);
@@ -326,13 +328,17 @@ void setup() {
     waitWiFi += 100;
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
-    // Simulation only starts when Wi-Fi is connected
+  preferences.begin("influx", false);
+  String tokenCheck = preferences.getString("token", "");
+  preferences.end();
+
+  if (WiFi.status() == WL_CONNECTED && tokenCheck.length() > 0) {
+    // Simulation only starts when Wi-Fi and token are available
     Serial.println("Starting Keiser M3 simulation with BLE...");
     simulateKeiserM3BLE(56);
     Serial.println("Simulation complete.");
   } else {
-    Serial.println("Wi-Fi not connected. BLE simulation not started.");
+    Serial.println("Wi-Fi not connected or missing InfluxDB token. BLE simulation not started.");
   }
 }
 
