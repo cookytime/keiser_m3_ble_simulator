@@ -90,7 +90,10 @@ void parseManufacturerData(const uint8_t data[19]) {
 //
 // Replaces previous advertisement with new manufacturer data
 void updateBLEAdvertisement(const uint8_t manufacturer_data[19]) {
-  std::string m_data((char*)manufacturer_data, 19);
+  String m_data;
+  for (int i = 0; i < 19; i++) {
+    m_data += (char)manufacturer_data[i];
+  }
   advPayload.setManufacturerData(m_data);
   pAdvertising->stop();
   pAdvertising->setAdvertisementData(advPayload);
